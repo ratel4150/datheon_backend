@@ -2,7 +2,6 @@ import sys
 import selectors
 import asyncio
 
-# Fix para Windows — psycopg3 no es compatible con ProactorEventLoop
 if sys.platform == "win32":
     selector = selectors.SelectSelector()
     loop = asyncio.SelectorEventLoop(selector)
@@ -21,11 +20,9 @@ async def lifespan(app: FastAPI):
     print(f"Datheon API iniciada — entorno: {settings.environment}")
     yield
     await close_pool()
-    print("Pool de DB cerrado")
 
 app = FastAPI(
     title="Datheon API",
-    description="Backend IA para la plataforma Datheón",
     version="1.0.0",
     lifespan=lifespan,
     docs_url="/docs" if settings.environment != "production" else None,
@@ -33,7 +30,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=settings.get_origins(),  # usa el método en lugar del campo directo
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
