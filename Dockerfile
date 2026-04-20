@@ -1,8 +1,7 @@
-FROM python:3.12-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
-# Instalar dependencias del sistema para asyncpg
 RUN apt-get update && apt-get install -y \
     gcc \
     libpq-dev \
@@ -15,4 +14,4 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
