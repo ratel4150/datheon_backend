@@ -1,13 +1,23 @@
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from groq import AsyncGroq
-from app.models.schemas import ChatRequest
 from app.services.rag import search_context
 from app.core.config import settings
+from pydantic import BaseModel
+from typing import List, Optional
 import json
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 groq = AsyncGroq(api_key=settings.groq_api_key)
+
+# Schema compatible con Vercel AI SDK useChat
+class Message(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    messages: List[Message]
+    lang: Optional[str] = "es"
 
 SYSTEM_PROMPTS = {
     "es": """Eres el asistente virtual de Datheón, consultora tecnológica especializada en:
@@ -43,31 +53,33 @@ Rules:
 Datheón context:
 {context}""",
 
-    "fr": """Vous êtes l'assistant de Datheón, société de conseil technologique spécialisée dans:
-- IA SaaS et agents autonomes
-- Développement web et mobile
-- IoT, Cloud et DevOps
-- Odoo ERP personnalisé
+    "fr": """Vous êtes l'assistant de Datheón, société de conseil technologique.
 
 Règles:
 1. Répondez toujours en français
 2. Soyez concis, max 3-4 phrases
-3. Pour les prix suggérez: calendly.com/d/cv8d-jjp-nhd
+3. Pour les prix: calendly.com/d/cv8d-jjp-nhd
 
-Contexte Datheón:
+Contexte:
 {context}""",
 }
 
 @router.post("")
 async def chat(req: ChatRequest):
-    context = await search_context(req.message)
+    # Tomar el último mensaje del usuario para buscar contexto
+    last_user_msg = next(
+        (m.content for m in reversed(req.messages) if m.role == "user"),
+        ""
+    )
+
+    context = await search_context(last_user_msg)
     lang = req.lang if req.lang in SYSTEM_PROMPTS else "es"
     system = SYSTEM_PROMPTS[lang].format(
         context=context or "Sin contexto específico disponible."
     )
 
+    # Construir historial compatible con Groq
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
-    messages.append({"role": "user", "content": req.message})
 
     async def stream():
         response = await groq.chat.completions.create(
