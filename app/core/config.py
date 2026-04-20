@@ -1,3 +1,4 @@
+# File: datheon-api/app/core/config.py
 from pydantic_settings import BaseSettings
 from typing import List
 
@@ -10,7 +11,9 @@ class Settings(BaseSettings):
     allowed_origins: str = "http://localhost:3000"
 
     def get_origins(self) -> List[str]:
-        return [o.strip() for o in self.allowed_origins.split(",")]
+     if self.allowed_origins.strip() == "*":
+        return ["*"]
+     return [o.strip() for o in self.allowed_origins.split(",")]
 
     class Config:
         env_file = ".env"
