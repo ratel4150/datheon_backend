@@ -1,22 +1,21 @@
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 from app.db.postgres import get_pool
 
-# Modelo local, no necesita API key, se descarga una vez (~90MB)
+# Modelo ligero ~50MB, sin PyTorch
 _model = None
 
-def get_model() -> SentenceTransformer:
+def get_model() -> TextEmbedding:
     global _model
     if _model is None:
-        _model = SentenceTransformer('all-MiniLM-L6-v2')
+        _model = TextEmbedding("BAAI/bge-small-en-v1.5")
     return _model
 
 async def get_embedding(text: str) -> list:
-    """Genera embedding local sin API key."""
     model = get_model()
-    return model.encode(text).tolist()
+    embeddings = list(model.embed([text]))
+    return embeddings[0].tolist()
 
 async def search_context(query: str, limit: int = 4, threshold: float = 0.4) -> str:
-    """Busca fragmentos relevantes en pgvector y devuelve contexto."""
     embedding = await get_embedding(query)
     pool = await get_pool()
 
@@ -46,7 +45,6 @@ async def search_context(query: str, limit: int = 4, threshold: float = 0.4) -> 
     return "\n\n---\n\n".join(chunks)
 
 async def index_document(doc_id: str, title: str, content: str, category: str = "general") -> dict:
-    """Indexa un documento generando su embedding y guardándolo en pgvector."""
     embedding = await get_embedding(content)
     pool = await get_pool()
 
