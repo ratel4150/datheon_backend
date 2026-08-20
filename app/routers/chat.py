@@ -83,7 +83,7 @@ async def chat(req: ChatRequest):
 
     async def stream():
         response = await groq.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="qwen/qwen3.6-27b",
             messages=[{"role": "system", "content": system}, *messages],
             max_tokens=600,
             temperature=0.7,
