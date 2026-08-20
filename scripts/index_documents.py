@@ -1,3 +1,4 @@
+# File: scripts/index_documents.py
 import asyncio
 import selectors
 import sys
