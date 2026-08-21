@@ -1,3 +1,4 @@
+# File: app/db/postgres.py
 import psycopg
 from psycopg_pool import AsyncConnectionPool
 from app.core.config import settings
@@ -50,6 +51,16 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     role       TEXT NOT NULL,
     content    TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS chat_feedback (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    message_id         TEXT NOT NULL,
+    rating             TEXT NOT NULL CHECK (rating IN ('up', 'down')),
+    lang               TEXT DEFAULT 'es',
+    user_message       TEXT,
+    assistant_message  TEXT,
+    created_at         TIMESTAMPTZ DEFAULT NOW()
 );
 """
 
