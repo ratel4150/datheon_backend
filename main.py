@@ -25,7 +25,7 @@ app = FastAPI(
     title="Datheon API",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url="/docs" if settings.environment != "production" else None,
+   docs_url="/docs",  # <--- Cámbialo para que quede fijo así
     redirect_slashes=False, # <-- AGREGA ESTA LÍNEA AQUÍ
 )
 
