@@ -65,6 +65,7 @@ Contexte:
 }
 
 @router.post("")
+@router.post("/") 
 async def chat(req: ChatRequest):
     # Tomar el último mensaje del usuario para buscar contexto
     last_user_msg = next(
