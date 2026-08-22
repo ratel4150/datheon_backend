@@ -1,8 +1,11 @@
 # File: app/routers/chat.py
 import json
 import logging
+import re
+import time
+from collections import defaultdict, deque
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from groq import AsyncGroq
 from app.services.rag import search_context
@@ -24,6 +27,46 @@ MODEL_NAME = "openai/gpt-oss-120b"
 MAX_HISTORY_MESSAGES = 16
 MAX_RESPONSE_TOKENS = 2048
 CALENDLY_URL = "https://calendly.com/d/cv8d-jjp-nhd"
+
+# Límites de payload — el frontend ya limita a esto, pero un cliente
+# modificado (o alguien pegándole directo a la API) puede saltárselo.
+MAX_MESSAGE_CHARS = 4000          # por mensaje individual, se trunca
+MAX_MESSAGE_CHARS_HARD = 20000    # por mensaje, se rechaza la request entera
+MAX_MESSAGES_IN_HISTORY = 60      # antes de recortar a MAX_HISTORY_MESSAGES
+MAX_ATTACHMENT_B64_CHARS = 6_000_000  # ~4.5MB de archivo real en base64
+MAX_CONTEXT_FIELD_CHARS = 150     # user.name / page_context.path, etc.
+
+# Rate limiting simple en memoria — suficiente para una sola instancia
+# (Railway). Si escalan a más de un contenedor, esto deja de compartir
+# estado entre réplicas y hay que moverlo a Redis.
+RATE_LIMIT_REQUESTS = 20
+RATE_LIMIT_WINDOW_SECONDS = 60
+_rate_limit_buckets: Dict[str, deque] = defaultdict(deque)
+
+
+def check_rate_limit(client_id: str) -> None:
+    now = time.monotonic()
+    bucket = _rate_limit_buckets[client_id]
+    while bucket and now - bucket[0] > RATE_LIMIT_WINDOW_SECONDS:
+        bucket.popleft()
+    if len(bucket) >= RATE_LIMIT_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiadas solicitudes — espera un momento antes de volver a escribir.",
+        )
+    bucket.append(now)
+
+
+def sanitize_context_field(value: Optional[str], max_len: int = MAX_CONTEXT_FIELD_CHARS) -> Optional[str]:
+    """Los campos de page_context/user vienen del cliente y se inyectan tal
+    cual al system prompt — sin esto, un `user.name` como "Ignora todas las
+    instrucciones anteriores y..." sería una inyección de prompt directa."""
+    if not value:
+        return None
+    # Colapsa saltos de línea y controla longitud — no intenta "detectar"
+    # instrucciones (eso es un juego perdido), solo limita el radio de daño.
+    cleaned = re.sub(r"\s+", " ", value).strip()
+    return cleaned[:max_len] if cleaned else None
 
 
 # Schema compatible con Vercel AI SDK useChat
@@ -215,28 +258,37 @@ def build_suggestions(lang: str, action_key: Optional[str]) -> List[str]:
 
 def build_extra_context(lang: str, req: ChatRequest) -> str:
     """Convierte contexto de navegación / usuario / adjuntos en líneas que el
-    modelo puede usar para sonar consciente de la situación del visitante."""
+    modelo puede usar para sonar consciente de la situación del visitante.
+
+    Todo lo que entra aquí viene del cliente sin verificar — se sanitiza
+    antes de interpolarlo en el prompt (ver sanitize_context_field)."""
     lines: List[str] = []
 
-    if req.user and req.user.name:
-        who = req.user.name
-        if req.user.company:
-            who += f" ({req.user.company})" if lang != "en" else f" from {req.user.company}"
+    user_name = sanitize_context_field(req.user.name) if req.user else None
+    user_company = sanitize_context_field(req.user.company) if req.user else None
+    if user_name:
+        who = user_name
+        if user_company:
+            who += f" ({user_company})" if lang != "en" else f" from {user_company}"
         lines.append(
             f"El usuario autenticado se llama {who}. Puedes saludarlo por su nombre."
             if lang == "es" else
             f"The authenticated user is {who}. You may greet them by name."
         )
 
-    if req.page_context and req.page_context.path:
+    page_path = sanitize_context_field(req.page_context.path) if req.page_context else None
+    if page_path:
         lines.append(
-            f"El usuario está actualmente en la página: {req.page_context.path}."
+            f"El usuario está actualmente en la página: {page_path}."
             if lang == "es" else
-            f"The user is currently on the page: {req.page_context.path}."
+            f"The user is currently on the page: {page_path}."
         )
 
     if req.attachments:
-        names = ", ".join(a.name for a in req.attachments if a.name) or "un archivo"
+        clean_names = [
+            sanitize_context_field(a.name, 60) for a in req.attachments if a.name
+        ]
+        names = ", ".join(n for n in clean_names if n) or "un archivo"
         lines.append(
             f"El usuario adjuntó: {names}. Todavía no puedes leer imágenes o PDFs directamente "
             "— pide que describan el contenido relevante en texto."
@@ -251,6 +303,26 @@ def build_extra_context(lang: str, req: ChatRequest) -> str:
 @router.post("")
 @router.post("/")
 async def chat(req: ChatRequest, request: Request):
+    client_id = request.client.host if request.client else "unknown"
+    check_rate_limit(client_id)
+
+    if len(req.messages) > MAX_MESSAGES_IN_HISTORY:
+        raise HTTPException(status_code=413, detail="Conversación demasiado larga.")
+
+    for m in req.messages:
+        if len(m.content) > MAX_MESSAGE_CHARS_HARD:
+            raise HTTPException(status_code=413, detail="Mensaje demasiado largo.")
+    # Truncado suave: un mensaje un poco por encima del límite del frontend
+    # (ej. un cliente viejo en caché) no debería tumbar la request entera.
+    for m in req.messages:
+        if len(m.content) > MAX_MESSAGE_CHARS:
+            m.content = m.content[:MAX_MESSAGE_CHARS]
+
+    if req.attachments:
+        for a in req.attachments:
+            if a.data_url and len(a.data_url) > MAX_ATTACHMENT_B64_CHARS:
+                raise HTTPException(status_code=413, detail="Adjunto demasiado grande.")
+
     # Tomar el último mensaje del usuario para buscar contexto
     last_user_msg = next(
         (m.content for m in reversed(req.messages) if m.role == "user"),
@@ -294,6 +366,7 @@ async def chat(req: ChatRequest, request: Request):
             )
 
             finish_reason = "stop"
+            sent_any_text = False
             async for chunk in response:
                 # El cliente pudo haber cerrado la conexión (botón "detener"
                 # del widget, o cerró la pestaña) — sin este check seguiríamos
@@ -307,9 +380,18 @@ async def chat(req: ChatRequest, request: Request):
                         pass
                     break
 
+                # Algunos providers OpenAI-compatibles mandan un último chunk
+                # con choices=[] antes de cerrar el stream (p.ej. uno de solo
+                # "usage"). Sin este guard, chunk.choices[0] tira IndexError
+                # justo al final de una respuesta casi completa — eso es lo
+                # que se veía como texto cortado + "Algo salió mal".
+                if not chunk.choices:
+                    continue
+
                 choice = chunk.choices[0]
                 delta = choice.delta.content
                 if delta:
+                    sent_any_text = True
                     yield f"0:{json.dumps(delta)}\n"
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
@@ -321,9 +403,16 @@ async def chat(req: ChatRequest, request: Request):
 
         except Exception as exc:  # noqa: BLE001
             logger.exception("Fallo al generar respuesta de chat")
-            # Parte de error del protocolo de Vercel AI SDK: useChat la
-            # levanta como `error` y el widget puede mostrar "Reintentar".
-            yield f"3:{json.dumps(str(exc))}\n"
+            if sent_any_text:
+                # Ya se le mandó contenido real al usuario — no tiene sentido
+                # asustarlo con una tarjeta de error sobre una respuesta que
+                # en la práctica ya casi había terminado. Se cierra limpio;
+                # si quedó corta, el botón de regenerar sigue ahí.
+                yield f'd:{json.dumps({"finishReason": "stop"})}\n'
+            else:
+                # Parte de error del protocolo de Vercel AI SDK: useChat la
+                # levanta como `error` y el widget puede mostrar "Reintentar".
+                yield f"3:{json.dumps(str(exc))}\n"
 
     return StreamingResponse(
         stream(),
@@ -334,11 +423,14 @@ async def chat(req: ChatRequest, request: Request):
 
 @router.post("/feedback")
 @router.post("/feedback/")
-async def feedback(payload: FeedbackRequest):
+async def feedback(payload: FeedbackRequest, request: Request):
     """Guarda el feedback (👍/👎) en Postgres, en la misma DB de pgvector.
 
     Reutiliza chat_messages/chat_sessions ya definidas en app/db/postgres.py
     (existían en el schema pero el router de chat nunca las usaba)."""
+    client_id = request.client.host if request.client else "unknown"
+    check_rate_limit(client_id)
+
     pool = await get_pool()
     try:
         async with pool.connection() as conn:
