@@ -301,7 +301,6 @@ def build_extra_context(lang: str, req: ChatRequest) -> str:
 
 
 @router.post("")
-<<<<<<< HEAD
 @router.post("/")
 async def chat(req: ChatRequest, request: Request):
     client_id = request.client.host if request.client else "unknown"
@@ -324,10 +323,6 @@ async def chat(req: ChatRequest, request: Request):
             if a.data_url and len(a.data_url) > MAX_ATTACHMENT_B64_CHARS:
                 raise HTTPException(status_code=413, detail="Adjunto demasiado grande.")
 
-=======
-@router.post("/") 
-async def chat(req: ChatRequest):
->>>>>>> 87570d8a8417601fd0ee61693f9f264bf268ce80
     # Tomar el último mensaje del usuario para buscar contexto
     last_user_msg = next(
         (m.content for m in reversed(req.messages) if m.role == "user"),
@@ -357,7 +352,6 @@ async def chat(req: ChatRequest):
     }
 
     async def stream():
-<<<<<<< HEAD
         try:
             # Antes del texto: el widget puede mostrar la tarjeta/sugerencias
             # apenas responde, sin esperar a que termine el streaming.
@@ -419,27 +413,12 @@ async def chat(req: ChatRequest):
                 # Parte de error del protocolo de Vercel AI SDK: useChat la
                 # levanta como `error` y el widget puede mostrar "Reintentar".
                 yield f"3:{json.dumps(str(exc))}\n"
-=======
-        response = await groq.chat.completions.create(
-            model="openai/gpt-oss-120b",
-            messages=[{"role": "system", "content": system}, *messages],
-            max_tokens=600,
-            temperature=0.7,
-            stream=True,
-        )
-        async for chunk in response:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield f"0:{json.dumps(delta)}\n"
-        yield "d:{}\n"
->>>>>>> 87570d8a8417601fd0ee61693f9f264bf268ce80
 
     return StreamingResponse(
         stream(),
         media_type="text/event-stream",
         headers={"X-Vercel-AI-Data-Stream": "v1"},
     )
-<<<<<<< HEAD
 
 
 @router.post("/feedback")
@@ -474,5 +453,3 @@ async def feedback(payload: FeedbackRequest, request: Request):
         return {"ok": False}
 
     return {"ok": True}
-=======
->>>>>>> 87570d8a8417601fd0ee61693f9f264bf268ce80
